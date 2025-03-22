@@ -96,6 +96,76 @@ void selectMode() {
     }
 }
 
+int32_t getTargetClassFromUser() {
+    // Wait for user input
+    while (!Serial.available()); // Wait until data is available
+
+    // Read the input string
+    String input = Serial.readString();
+    input.trim(); // Remove any leading/trailing whitespace
+
+    // Convert input to lowercase for case-insensitive comparison
+    input.toLowerCase();
+
+    // Compare input to "yes" or "no" and return the target class index
+    if (input == "yes") {
+        TF_LITE_REPORT_ERROR(error_reporter, "User input: yes (1)");
+        return 1; // "yes" corresponds to class index 1
+    } else if (input == "no") {
+        TF_LITE_REPORT_ERROR(error_reporter, "User input: no (0)");
+        return 0; // "no" corresponds to class index 0
+    } else {
+        TF_LITE_REPORT_ERROR(error_reporter, "Invalid input. Please enter 'yes' or 'no'.");
+        return -1; // Invalid input
+    }
+} 
+
+
+#define NUM_CLASSES 4
+#define NUM_PARAMETERS 16652
+
+// Compute pseudo-updates
+float* computePseudoUpdates(TfLiteTensor* output, int32_t target_class) {
+  uint8_t* output_data = output->data.uint8;
+
+  // Dequantize the output
+  float output_scale = output->params.scale;
+  int output_zero_point = output->params.zero_point;
+  float dequantized_output[NUM_CLASSES]; // Replace with the actual number of classes
+  for (int i = 0; i < NUM_CLASSES; i++) {
+      dequantized_output[i] = (output_data[i] - output_zero_point) * output_scale;
+  }
+
+  // Compute pseudo-updates using the dequantized output
+
+    float* updates = new float[NUM_PARAMETERS];
+    for (int i = 0; i < NUM_PARAMETERS; i++) {
+        // Simplified update rule: nudge weights based on prediction error
+        updates[i] = dequantized_output[target_class] - output_data[i];
+    }
+    return updates;
+}
+
+#if 0
+void sendUpdatesOverBLE(float* updates, int num_updates) {
+    int num_chunks = (num_updates * sizeof(float)) / MTU_SIZE;
+    if ((num_updates * sizeof(float)) % MTU_SIZE != 0) {
+        num_chunks++;
+    }
+
+    for (int i = 0; i < num_chunks; i++) {
+        int chunk_size = MTU_SIZE;
+        if (i == num_chunks - 1) {
+            chunk_size = (num_updates * sizeof(float)) % MTU_SIZE;
+        }
+
+        // Send the chunk
+        pCharacteristic->setValue((uint8_t*)(updates + (i * MTU_SIZE / sizeof(float))), chunk_size);
+        pCharacteristic->notify();
+        delay(10); // Add a small delay to avoid overwhelming the BLE stack
+    }
+}
+#endif 
 
 void ble_setup() {
   String name;
@@ -139,15 +209,15 @@ void setup() {
 
   tflite::InitializeTarget();
   
-    Serial.begin(115200);
-    while (!Serial); // Wait for Serial to be ready
+  Serial.begin(115200);
+  while (!Serial); // Wait for Serial to be ready
 
-    // Log a message using Serial
-    Serial.println("Initializing Audio recognition example using TensorFlow Lite...");
+  // Log a message using Serial
+  Serial.println("Initializing Audio recognition example using TensorFlow Lite...");
 
 
-    selectMode();
- 
+  selectMode();
+
   // Set up logging. Google style is to avoid globals or statics because of
   // lifetime uncertainty, but since this has a trivial destructor it's okay.
   // NOLINTNEXTLINE(runtime-global-variables)
@@ -300,22 +370,39 @@ void loop() {
 
   // Obtain a pointer to the output tensor
   TfLiteTensor* output = interpreter->output(0);
-  // Determine whether a command was recognized based on the output of inference
-  const char* found_command = nullptr;
-  uint8_t score = 0;
-  bool is_new_command = false;
-  TfLiteStatus process_status = recognizer->ProcessLatestResults(
-      output, current_time, &found_command, &score, &is_new_command);
-  if (process_status != kTfLiteOk) {
+
+  // Run in the selected mode
+  if (current_mode == MODE_INFERENCE) {
+      // Inference mode: Just print the results
+      Serial.println("Running in Inference Mode");
+      // Determine whether a command was recognized based on the output of inference
+      const char* found_command = nullptr;
+      uint8_t score = 0;
+      bool is_new_command = false;
+      TfLiteStatus process_status = recognizer->ProcessLatestResults(
+          output, current_time, &found_command, &score, &is_new_command);
+      if (process_status != kTfLiteOk) {
+        TF_LITE_REPORT_ERROR(error_reporter,
+                            "RecognizeCommands::ProcessLatestResults() failed");
+        return;
+      }
+      // Do something based on the recognized command. The default implementation
+      // just prints to the error console, but you should replace this with your
+      // own function for a real application.
+      RespondToCommand(error_reporter, current_time, found_command, score,
+                      is_new_command);
+  } else if (current_mode == MODE_TRAINING) {
+      // Training mode: Compute updates and send them
+      Serial.println("Running in Training Mode");
+      int32_t target_class = getTargetClassFromUser();
+      if (target_class != -1) {
+          float* updates = computePseudoUpdates(output, target_class);
+          //sendUpdatesViaBLE(updates);
+      }
+  } else {
     TF_LITE_REPORT_ERROR(error_reporter,
-                         "RecognizeCommands::ProcessLatestResults() failed");
-    return;
+                            "No mode selected!");
   }
-  // Do something based on the recognized command. The default implementation
-  // just prints to the error console, but you should replace this with your
-  // own function for a real application.
-  RespondToCommand(error_reporter, current_time, found_command, score,
-                   is_new_command);
 
 #ifdef PROFILE_MICRO_SPEECH
   const uint32_t prof_end = millis();
