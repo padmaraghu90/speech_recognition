@@ -48,6 +48,7 @@ TfLiteStatus InitAudioRecording(tflite::ErrorReporter* error_reporter);
 
 void CaptureSamples();
 bool detectSpeech(int16_t* samples, int numSamples);
+void setupRecording();
 void startRecording();
 void stopRecording();
 

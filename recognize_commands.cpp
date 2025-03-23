@@ -34,6 +34,10 @@ RecognizeCommands::RecognizeCommands(tflite::ErrorReporter* error_reporter,
   previous_top_label_time_ = std::numeric_limits<int32_t>::min();
 }
 
+extern int current_mode;
+#define MODE_INFERENCE 0
+#define MODE_TRAINING  1
+
 TfLiteStatus RecognizeCommands::ProcessLatestResults(
     const TfLiteTensor* latest_results, const int32_t current_time_ms,
     const char** found_command, uint8_t* score, bool* is_new_command) {
@@ -150,6 +154,12 @@ TfLiteStatus RecognizeCommands::ProcessLatestResults(
       previous_top_label_ = current_top_label;
     }
 #endif  // DEBUG_MICRO_SPEECH
+  if (current_mode == MODE_TRAINING) {
+  TF_LITE_REPORT_ERROR(
+        error_reporter_, "Scores: s %d u %d y %d n %d",
+        average_scores[0], average_scores[1], average_scores[2],
+        average_scores[3]);
+  }
     *is_new_command = false;
   }
   *found_command = current_top_label;

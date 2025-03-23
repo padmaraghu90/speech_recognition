@@ -118,12 +118,18 @@ int32_t getTargetClassFromUser() {
     input.toLowerCase();
 
     // Compare input to "yes" or "no" and return the target class index
-    if (input == "yes") {
-        TF_LITE_REPORT_ERROR(error_reporter, "User input: yes (1)");
-        return 1; // "yes" corresponds to class index 1
+    if (input == "silence") {
+        TF_LITE_REPORT_ERROR(error_reporter, "User input: silence (0)");
+        return 0; // "yes" corresponds to class index 1
+    } else if (input == "unknown") {
+        TF_LITE_REPORT_ERROR(error_reporter, "User input: unknown (1)");
+        return 1; // "no" corresponds to class index 0
+    } else if (input == "yes") {
+        TF_LITE_REPORT_ERROR(error_reporter, "User input: yes (2)");
+        return 2; // "no" corresponds to class index 0
     } else if (input == "no") {
-        TF_LITE_REPORT_ERROR(error_reporter, "User input: no (0)");
-        return 0; // "no" corresponds to class index 0
+        TF_LITE_REPORT_ERROR(error_reporter, "User input: no (3)");
+        return 3; // "no" corresponds to class index 0
     } else {
         TF_LITE_REPORT_ERROR(error_reporter, "Invalid input. Please enter 'yes' or 'no'.");
         return -1; // Invalid input
@@ -317,12 +323,14 @@ void setup() {
     }
 
     TF_LITE_REPORT_ERROR(error_reporter, "Initialization complete");
+  } else if (current_mode == MODE_TRAINING) {
+    setupRecording();
   }
   
   Serial.println("Setup done!");
 }
 
-
+bool recording_started = false;
 
 void trainingMode()
 {
@@ -341,79 +349,12 @@ void trainingMode()
   
   TF_LITE_REPORT_ERROR(error_reporter, "Start saying the word !");
 
-  TfLiteStatus init_status = InitAudioRecording(error_reporter);
-  if (init_status != kTfLiteOk) {
-    TF_LITE_REPORT_ERROR(error_reporter, "Unable to initialize audio");
-    return;
-  }
+  startRecording();
 
-  // Wait for new audio data and compute features
-  int how_many_new_slices = 0;
-  
-  previous_time = 0;
-
-  do {
-
-      current_time = LatestAudioTimestamp();
-
-      TfLiteStatus feature_status = feature_provider->PopulateFeatureData(error_reporter, previous_time, current_time, &how_many_new_slices);
-      
-      
-      if (feature_status != kTfLiteOk) {
-          Serial.println("Failed to compute features!");
-          return;
-      }
-    // Update the total number of slices captured
-    totalSlicesCaptured += how_many_new_slices;
-
-    // Update the previous_time for the next iteration
-    previous_time = current_time;
-    TF_LITE_REPORT_ERROR(error_reporter, "totalSlicesCaptured = %d", totalSlicesCaptured);
-
-
-  } while (totalSlicesCaptured < kMaxSlices); // Exit when the buffer is full
-
-  // Stop PDM microphone
-  stopRecording();
-
-  Serial.println("Audio captured and features computed.");
-
-
-  // Copy feature buffer to input tensor
-  for (int i = 0; i < kFeatureElementCount; i++) {
-    model_input_buffer[i] = feature_buffer[i];
-  }
-
-  // Run the model on the spectrogram input and make sure it succeeds.
-  TfLiteStatus invoke_status = interpreter->Invoke();
-  if (invoke_status != kTfLiteOk) {
-    TF_LITE_REPORT_ERROR(error_reporter, "Invoke failed");
-    return;
-  }
-
-  // Obtain a pointer to the output tensor
-  TfLiteTensor* output = interpreter->output(0);
-
-  Serial.println("output computed");
-  // Inference mode: Just print the results
-  // Determine whether a command was recognized based on the output of inference
-  const char* found_command = nullptr;
-  uint8_t score = 0;
-  bool is_new_command = false;
-  TfLiteStatus process_status = recognizer->ProcessLatestResults(
-      output, current_time, &found_command, &score, &is_new_command);
-  if (process_status != kTfLiteOk) {
-    TF_LITE_REPORT_ERROR(error_reporter,
-                        "RecognizeCommands::ProcessLatestResults() failed");
-    return;
-  }
-  TF_LITE_REPORT_ERROR(error_reporter, "Padma training mode :: Heard %s (%d) @%dms", found_command,
-                         score, current_time);
-
-  //float* updates = computePseudoUpdates(output, target_class);
-  //sendUpdatesViaBLE(updates);
-  training_in_progress = false;
+  recording_started = true;
 }
+
+
 // The name of this function is important for Arduino compatibility.
 void loop() {
 #ifdef PROFILE_MICRO_SPEECH
@@ -425,8 +366,10 @@ void loop() {
 #endif  // PROFILE_MICRO_SPEECH
 
   if (current_mode == MODE_TRAINING) {
-    trainingMode();
-    return;     
+    if (recording_started == false) {
+      trainingMode();
+      return;     
+    }
   } 
 
   BLEDevice central = BLE.central();
@@ -490,6 +433,14 @@ void loop() {
   // own function for a real application.
   RespondToCommand(error_reporter, current_time, found_command, score,
                   is_new_command);
+
+  if ((current_mode == MODE_TRAINING) && is_new_command) {
+    stopRecording();
+    Serial.println("Audio captured and features computed.");
+    recording_started = false;
+    training_in_progress = false;
+  }
+
 
 #ifdef PROFILE_MICRO_SPEECH
   const uint32_t prof_end = millis();

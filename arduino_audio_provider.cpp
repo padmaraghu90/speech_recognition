@@ -103,6 +103,10 @@ bool detectSpeech(int16_t* samples, int numSamples) {
   return true;
 }
 
+void setupRecording()
+{
+PDM.onReceive(CaptureSamples);
+}
 void startRecording()
 {
     // Start listening for audio: MONO @ 16KHz
