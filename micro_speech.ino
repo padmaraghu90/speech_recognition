@@ -55,7 +55,7 @@ int8_t feature_buffer[kFeatureElementCount];
 int8_t* model_input_buffer = nullptr;
 }  // namespace
 
-constexpr int feature_points_byte_count = kFeatureElementCount;
+constexpr int feature_points_byte_count = 4;
 constexpr int feature_struct_byte_count =
     (sizeof(int32_t)) + feature_points_byte_count;
 
@@ -435,10 +435,15 @@ void loop() {
                   is_new_command);
 
   if ((current_mode == MODE_TRAINING) && is_new_command) {
-    stopRecording();
-    Serial.println("Audio captured and features computed.");
-    recording_started = false;
-    training_in_progress = false;
+      stopRecording();
+      Serial.println("Audio captured and features computed.");
+      recording_started = false;
+      training_in_progress = false;
+      if (central && central.connected()) {
+        *feature_transmit_length = 4;
+        featureCharacteristic.writeValue(feature_struct_buffer,
+                                        feature_struct_byte_count);
+    }
   }
 
 

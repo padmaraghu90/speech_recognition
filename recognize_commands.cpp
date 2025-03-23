@@ -37,6 +37,7 @@ RecognizeCommands::RecognizeCommands(tflite::ErrorReporter* error_reporter,
 extern int current_mode;
 #define MODE_INFERENCE 0
 #define MODE_TRAINING  1
+extern int8_t* feature_points ;
 
 TfLiteStatus RecognizeCommands::ProcessLatestResults(
     const TfLiteTensor* latest_results, const int32_t current_time_ms,
@@ -144,6 +145,17 @@ TfLiteStatus RecognizeCommands::ProcessLatestResults(
     previous_top_label_ = current_top_label;
     previous_top_label_time_ = current_time_ms;
     *is_new_command = true;
+      if (current_mode == MODE_TRAINING) {
+          int8_t *feature_entry = &feature_points[0];
+          for (int i = 0; i < 4; i++) {
+              feature_entry[i] = average_scores[i];
+          }
+
+      TF_LITE_REPORT_ERROR(
+            error_reporter_, "Scores: s %d u %d y %d n %d",
+            average_scores[0], average_scores[1], average_scores[2],
+            average_scores[3]);
+      }
   } else {
 #ifdef DEBUG_MICRO_SPEECH
     if (current_top_label != previous_top_label_) {
@@ -154,12 +166,7 @@ TfLiteStatus RecognizeCommands::ProcessLatestResults(
       previous_top_label_ = current_top_label;
     }
 #endif  // DEBUG_MICRO_SPEECH
-  if (current_mode == MODE_TRAINING) {
-  TF_LITE_REPORT_ERROR(
-        error_reporter_, "Scores: s %d u %d y %d n %d",
-        average_scores[0], average_scores[1], average_scores[2],
-        average_scores[3]);
-  }
+
     *is_new_command = false;
   }
   *found_command = current_top_label;
