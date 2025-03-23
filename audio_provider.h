@@ -46,4 +46,9 @@ int32_t LatestAudioTimestamp();
 // Starts audio capture
 TfLiteStatus InitAudioRecording(tflite::ErrorReporter* error_reporter);
 
+void CaptureSamples();
+bool detectSpeech(int16_t* samples, int numSamples);
+void startRecording();
+void stopRecording();
+
 #endif  // TENSORFLOW_LITE_MICRO_EXAMPLES_MICRO_SPEECH_AUDIO_PROVIDER_H_

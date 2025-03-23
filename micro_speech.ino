@@ -70,8 +70,13 @@ int32_t* feature_transmit_length =
 int8_t* feature_points =
     reinterpret_cast<int8_t*>(feature_struct_buffer + (sizeof(int32_t)));
 
+bool training_in_progress = false;
 
-
+void clearSerialBuffer() {
+    while (Serial.available() > 0) {
+        Serial.read(); // Read and discard any leftover characters
+    }
+}
 void selectMode() {
     Serial.println("Select mode:");
     Serial.println("1. Inference");
@@ -94,9 +99,14 @@ void selectMode() {
         Serial.println("Invalid input. Defaulting to Inference.");
         current_mode = MODE_INFERENCE;
     }
+
+    clearSerialBuffer();
 }
 
 int32_t getTargetClassFromUser() {
+
+    Serial.println("Enter yes or no");
+
     // Wait for user input
     while (!Serial.available()); // Wait until data is available
 
@@ -298,16 +308,112 @@ void setup() {
 
   previous_time = 0;
 
-  // start the audio
+  if (current_mode == MODE_INFERENCE) {
+    // start the audio
+    TfLiteStatus init_status = InitAudioRecording(error_reporter);
+    if (init_status != kTfLiteOk) {
+      TF_LITE_REPORT_ERROR(error_reporter, "Unable to initialize audio");
+      return;
+    }
+
+    TF_LITE_REPORT_ERROR(error_reporter, "Initialization complete");
+  }
+  
+  Serial.println("Setup done!");
+}
+
+
+
+void trainingMode()
+{
+  int32_t current_time;
+  const int kMaxSlices = 49; // Example: Buffer can store 49 slices
+  int totalSlicesCaptured = 0; // Counter for slices captured
+
+  if (training_in_progress == true)
+    return;
+
+  training_in_progress = true;
+
+  int32_t target_class = getTargetClassFromUser();
+  if (target_class == -1)
+    return;
+  
+  TF_LITE_REPORT_ERROR(error_reporter, "Start saying the word !");
+
   TfLiteStatus init_status = InitAudioRecording(error_reporter);
   if (init_status != kTfLiteOk) {
     TF_LITE_REPORT_ERROR(error_reporter, "Unable to initialize audio");
     return;
   }
 
-  TF_LITE_REPORT_ERROR(error_reporter, "Initialization complete");
-}
+  // Wait for new audio data and compute features
+  int how_many_new_slices = 0;
+  
+  previous_time = 0;
 
+  do {
+
+      current_time = LatestAudioTimestamp();
+
+      TfLiteStatus feature_status = feature_provider->PopulateFeatureData(error_reporter, previous_time, current_time, &how_many_new_slices);
+      
+      
+      if (feature_status != kTfLiteOk) {
+          Serial.println("Failed to compute features!");
+          return;
+      }
+    // Update the total number of slices captured
+    totalSlicesCaptured += how_many_new_slices;
+
+    // Update the previous_time for the next iteration
+    previous_time = current_time;
+    TF_LITE_REPORT_ERROR(error_reporter, "totalSlicesCaptured = %d", totalSlicesCaptured);
+
+
+  } while (totalSlicesCaptured < kMaxSlices); // Exit when the buffer is full
+
+  // Stop PDM microphone
+  stopRecording();
+
+  Serial.println("Audio captured and features computed.");
+
+
+  // Copy feature buffer to input tensor
+  for (int i = 0; i < kFeatureElementCount; i++) {
+    model_input_buffer[i] = feature_buffer[i];
+  }
+
+  // Run the model on the spectrogram input and make sure it succeeds.
+  TfLiteStatus invoke_status = interpreter->Invoke();
+  if (invoke_status != kTfLiteOk) {
+    TF_LITE_REPORT_ERROR(error_reporter, "Invoke failed");
+    return;
+  }
+
+  // Obtain a pointer to the output tensor
+  TfLiteTensor* output = interpreter->output(0);
+
+  Serial.println("output computed");
+  // Inference mode: Just print the results
+  // Determine whether a command was recognized based on the output of inference
+  const char* found_command = nullptr;
+  uint8_t score = 0;
+  bool is_new_command = false;
+  TfLiteStatus process_status = recognizer->ProcessLatestResults(
+      output, current_time, &found_command, &score, &is_new_command);
+  if (process_status != kTfLiteOk) {
+    TF_LITE_REPORT_ERROR(error_reporter,
+                        "RecognizeCommands::ProcessLatestResults() failed");
+    return;
+  }
+  TF_LITE_REPORT_ERROR(error_reporter, "Padma training mode :: Heard %s (%d) @%dms", found_command,
+                         score, current_time);
+
+  //float* updates = computePseudoUpdates(output, target_class);
+  //sendUpdatesViaBLE(updates);
+  training_in_progress = false;
+}
 // The name of this function is important for Arduino compatibility.
 void loop() {
 #ifdef PROFILE_MICRO_SPEECH
@@ -317,6 +423,11 @@ void loop() {
   static uint32_t prof_min = std::numeric_limits<uint32_t>::max();
   static uint32_t prof_max = 0;
 #endif  // PROFILE_MICRO_SPEECH
+
+  if (current_mode == MODE_TRAINING) {
+    trainingMode();
+    return;     
+  } 
 
   BLEDevice central = BLE.central();
 
@@ -328,6 +439,7 @@ void loop() {
                          central.address().c_str());
   }
   was_connected_last = central;
+
 
   // Fetch the spectrogram for the current time.
   const int32_t current_time = LatestAudioTimestamp();
@@ -350,17 +462,6 @@ void loop() {
     model_input_buffer[i] = feature_buffer[i];
   }
 
-  if (central && central.connected()) {
-
-      *feature_transmit_length = kFeatureElementCount;
-      int8_t *feature_entry = &feature_points[0];
-      for (int i = 0; i < kFeatureElementCount; i++) {
-	        feature_entry[i] = feature_buffer[i];
-      }
-      featureCharacteristic.writeValue(feature_struct_buffer,
-                                      feature_struct_byte_count);
-  }
-
   // Run the model on the spectrogram input and make sure it succeeds.
   TfLiteStatus invoke_status = interpreter->Invoke();
   if (invoke_status != kTfLiteOk) {
@@ -371,38 +472,24 @@ void loop() {
   // Obtain a pointer to the output tensor
   TfLiteTensor* output = interpreter->output(0);
 
-  // Run in the selected mode
-  if (current_mode == MODE_INFERENCE) {
-      // Inference mode: Just print the results
-      Serial.println("Running in Inference Mode");
-      // Determine whether a command was recognized based on the output of inference
-      const char* found_command = nullptr;
-      uint8_t score = 0;
-      bool is_new_command = false;
-      TfLiteStatus process_status = recognizer->ProcessLatestResults(
-          output, current_time, &found_command, &score, &is_new_command);
-      if (process_status != kTfLiteOk) {
-        TF_LITE_REPORT_ERROR(error_reporter,
-                            "RecognizeCommands::ProcessLatestResults() failed");
-        return;
-      }
-      // Do something based on the recognized command. The default implementation
-      // just prints to the error console, but you should replace this with your
-      // own function for a real application.
-      RespondToCommand(error_reporter, current_time, found_command, score,
-                      is_new_command);
-  } else if (current_mode == MODE_TRAINING) {
-      // Training mode: Compute updates and send them
-      Serial.println("Running in Training Mode");
-      int32_t target_class = getTargetClassFromUser();
-      if (target_class != -1) {
-          float* updates = computePseudoUpdates(output, target_class);
-          //sendUpdatesViaBLE(updates);
-      }
-  } else {
+
+  // Inference mode: Just print the results
+  // Determine whether a command was recognized based on the output of inference
+  const char* found_command = nullptr;
+  uint8_t score = 0;
+  bool is_new_command = false;
+  TfLiteStatus process_status = recognizer->ProcessLatestResults(
+      output, current_time, &found_command, &score, &is_new_command);
+  if (process_status != kTfLiteOk) {
     TF_LITE_REPORT_ERROR(error_reporter,
-                            "No mode selected!");
+                        "RecognizeCommands::ProcessLatestResults() failed");
+    return;
   }
+  // Do something based on the recognized command. The default implementation
+  // just prints to the error console, but you should replace this with your
+  // own function for a real application.
+  RespondToCommand(error_reporter, current_time, found_command, score,
+                  is_new_command);
 
 #ifdef PROFILE_MICRO_SPEECH
   const uint32_t prof_end = millis();

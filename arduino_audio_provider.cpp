@@ -91,6 +91,31 @@ TfLiteStatus InitAudioRecording(tflite::ErrorReporter* error_reporter) {
   return kTfLiteOk;
 }
 
+bool detectSpeech(int16_t* samples, int numSamples) {
+#if 0
+    float energy = 0.0;
+    for (int i = 0; i < numSamples; i++) {
+        energy += samples[i] * samples[i];
+    }
+    energy /= numSamples;
+    return (energy > energyThreshold);
+#endif
+  return true;
+}
+
+void startRecording()
+{
+    // Start listening for audio: MONO @ 16KHz
+    PDM.begin(1, kAudioSampleFrequency);
+    // gain: -20db (min) + 6.5db (13) + 3.2db (builtin) = -10.3db
+    PDM.setGain(13);
+}
+
+void stopRecording()
+{
+  PDM.end();
+}
+
 TfLiteStatus GetAudioSamples(tflite::ErrorReporter* error_reporter,
                              int start_ms, int duration_ms,
                              int* audio_samples_size, int16_t** audio_samples) {
